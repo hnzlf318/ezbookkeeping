@@ -10,4 +10,5 @@ var (
 	ErrTransactionItemNameAlreadyExists     = NewNormalError(NormalSubcategoryItem, 3, http.StatusBadRequest, "transaction item name already exists")
 	ErrTransactionItemInUseCannotBeDeleted = NewNormalError(NormalSubcategoryItem, 4, http.StatusBadRequest, "transaction item is in use and cannot be deleted")
 	ErrTransactionItemIndexNotFound        = NewNormalError(NormalSubcategoryItem, 5, http.StatusBadRequest, "transaction item index not found")
+	ErrCannotUseHiddenTransactionItem      = NewNormalError(NormalSubcategoryItem, 6, http.StatusBadRequest, "cannot use hidden transaction item")
 )

@@ -464,7 +464,7 @@ func (s *TransactionService) GetTransactionCount(c core.Context, uid int64, maxT
 }
 
 // CreateTransaction saves a new transaction to database
-func (s *TransactionService) CreateTransaction(c core.Context, transaction *models.Transaction, tagIds []int64, pictureIds []int64) error {
+func (s *TransactionService) CreateTransaction(c core.Context, transaction *models.Transaction, tagIds []int64, itemIds []int64, pictureIds []int64) error {
 	if transaction.Uid <= 0 {
 		return errs.ErrUserIdInvalid
 	}
@@ -498,6 +498,14 @@ func (s *TransactionService) CreateTransaction(c core.Context, transaction *mode
 		return errs.ErrSystemIsBusy
 	}
 
+	itemIds = utils.ToUniqueInt64Slice(itemIds)
+	needItemIndexUuidCount := uint16(len(itemIds))
+	itemIndexUuids := s.GenerateUuids(uuid.UUID_TYPE_ITEM_INDEX, needItemIndexUuidCount)
+
+	if len(itemIndexUuids) < int(needItemIndexUuidCount) {
+		return errs.ErrSystemIsBusy
+	}
+
 	transaction.TransactionId = transactionUuids[0]
 
 	if transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_OUT || transaction.Type == models.TRANSACTION_DB_TYPE_TRANSFER_IN {
@@ -523,6 +531,20 @@ func (s *TransactionService) CreateTransaction(c core.Context, transaction *mode
 		}
 	}
 
+	transactionItemIndexes := make([]*models.TransactionItemIndex, len(itemIds))
+
+	for i := 0; i < len(itemIds); i++ {
+		transactionItemIndexes[i] = &models.TransactionItemIndex{
+			ItemIndexId:     itemIndexUuids[i],
+			Uid:             transaction.Uid,
+			Deleted:         false,
+			ItemId:          itemIds[i],
+			TransactionId:   transaction.TransactionId,
+			CreatedUnixTime: now,
+			UpdatedUnixTime: now,
+		}
+	}
+
 	pictureUpdateModel := &models.TransactionPictureInfo{
 		TransactionId:   transaction.TransactionId,
 		UpdatedUnixTime: now,
@@ -531,7 +553,7 @@ func (s *TransactionService) CreateTransaction(c core.Context, transaction *mode
 	userDataDb := s.UserDataDB(transaction.Uid)
 
 	return userDataDb.DoTransaction(c, func(sess *xorm.Session) error {
-		return s.doCreateTransaction(c, userDataDb, sess, transaction, transactionTagIndexes, tagIds, pictureIds, pictureUpdateModel)
+		return s.doCreateTransaction(c, userDataDb, sess, transaction, transactionTagIndexes, transactionItemIndexes, tagIds, itemIds, pictureIds, pictureUpdateModel)
 	})
 }
 
@@ -643,7 +665,7 @@ func (s *TransactionService) BatchCreateTransactions(c core.Context, uid int64, 
 			transaction := transactions[i]
 			transactionTagIndexes := allTransactionTagIndexes[transaction.TransactionId]
 			transactionTagIds := allTransactionTagIds[transaction.TransactionId]
-			err := s.doCreateTransaction(c, userDataDb, sess, transaction, transactionTagIndexes, transactionTagIds, nil, nil)
+			err := s.doCreateTransaction(c, userDataDb, sess, transaction, transactionTagIndexes, nil, transactionTagIds, nil, nil, nil)
 
 			currentProcess = float64(i) / float64(len(transactions)) * 100
 
@@ -788,7 +810,7 @@ func (s *TransactionService) CreateScheduledTransactions(c core.Context, current
 		}
 
 		tagIds := template.GetTagIds()
-		err = s.CreateTransaction(c, transaction, tagIds, nil)
+		err = s.CreateTransaction(c, transaction, tagIds, nil, nil)
 
 		if err == nil {
 			successCount++
@@ -805,7 +827,7 @@ func (s *TransactionService) CreateScheduledTransactions(c core.Context, current
 }
 
 // ModifyTransaction saves an existed transaction to database
-func (s *TransactionService) ModifyTransaction(c core.Context, transaction *models.Transaction, currentTagIdsCount int, addTagIds []int64, removeTagIds []int64, addPictureIds []int64, removePictureIds []int64) error {
+func (s *TransactionService) ModifyTransaction(c core.Context, transaction *models.Transaction, currentTagIdsCount int, addTagIds []int64, removeTagIds []int64, addItemIds []int64, removeItemIds []int64, addPictureIds []int64, removePictureIds []int64) error {
 	if transaction.Uid <= 0 {
 		return errs.ErrUserIdInvalid
 	}
@@ -814,6 +836,13 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 	tagIndexUuids := s.GenerateUuids(uuid.UUID_TYPE_TAG_INDEX, needTagIndexUuidCount)
 
 	if len(tagIndexUuids) < int(needTagIndexUuidCount) {
+		return errs.ErrSystemIsBusy
+	}
+
+	needItemIndexUuidCount := uint16(len(addItemIds))
+	itemIndexUuids := s.GenerateUuids(uuid.UUID_TYPE_ITEM_INDEX, needItemIndexUuidCount)
+
+	if len(itemIndexUuids) < int(needItemIndexUuidCount) {
 		return errs.ErrSystemIsBusy
 	}
 
@@ -827,6 +856,8 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 
 	addTagIds = utils.ToUniqueInt64Slice(addTagIds)
 	removeTagIds = utils.ToUniqueInt64Slice(removeTagIds)
+	addItemIds = utils.ToUniqueInt64Slice(addItemIds)
+	removeItemIds = utils.ToUniqueInt64Slice(removeItemIds)
 
 	transactionTagIndexes := make([]*models.TransactionTagIndex, len(addTagIds))
 
@@ -836,6 +867,20 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 			Uid:             transaction.Uid,
 			Deleted:         false,
 			TagId:           addTagIds[i],
+			TransactionId:   transaction.TransactionId,
+			CreatedUnixTime: now,
+			UpdatedUnixTime: now,
+		}
+	}
+
+	transactionItemIndexes := make([]*models.TransactionItemIndex, len(addItemIds))
+
+	for i := 0; i < len(addItemIds); i++ {
+		transactionItemIndexes[i] = &models.TransactionItemIndex{
+			ItemIndexId:     itemIndexUuids[i],
+			Uid:             transaction.Uid,
+			Deleted:         false,
+			ItemId:          addItemIds[i],
 			TransactionId:   transaction.TransactionId,
 			CreatedUnixTime: now,
 			UpdatedUnixTime: now,
@@ -994,6 +1039,13 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 			return err
 		}
 
+		// Get and verify items
+		err = s.isItemsValid(sess, transaction, transactionItemIndexes, addItemIds)
+
+		if err != nil {
+			return err
+		}
+
 		// Get and verify pictures
 		err = s.isPicturesValid(sess, transaction, addPictureIds)
 
@@ -1087,6 +1139,35 @@ func (s *TransactionService) ModifyTransaction(c core.Context, transaction *mode
 			if err != nil {
 				log.Errorf(c, "[transactions.ModifyTransaction] failed to update transaction tag index, because %s", err.Error())
 				return err
+			}
+		}
+
+		// Update transaction item index
+		if len(removeItemIds) > 0 {
+			itemIndexUpdateModel := &models.TransactionItemIndex{
+				Deleted:         true,
+				DeletedUnixTime: now,
+			}
+
+			_, err := sess.Cols("deleted", "deleted_unix_time").Where("uid=? AND deleted=? AND transaction_id=?", transaction.Uid, false, transaction.TransactionId).In("item_id", removeItemIds).Update(itemIndexUpdateModel)
+
+			if err != nil {
+				log.Errorf(c, "[transactions.ModifyTransaction] failed to remove transaction item index, because %s", err.Error())
+				return err
+			}
+		}
+
+		if len(transactionItemIndexes) > 0 {
+			for i := 0; i < len(transactionItemIndexes); i++ {
+				transactionItemIndex := transactionItemIndexes[i]
+				transactionItemIndex.TransactionTime = transaction.TransactionTime
+
+				_, err := sess.Insert(transactionItemIndex)
+
+				if err != nil {
+					log.Errorf(c, "[transactions.ModifyTransaction] failed to add transaction item index, because %s", err.Error())
+					return err
+				}
 			}
 		}
 
@@ -2214,7 +2295,7 @@ func (s *TransactionService) GetTransactionIds(transactions []*models.Transactio
 	return transactionIds
 }
 
-func (s *TransactionService) doCreateTransaction(c core.Context, database *datastore.Database, sess *xorm.Session, transaction *models.Transaction, transactionTagIndexes []*models.TransactionTagIndex, tagIds []int64, pictureIds []int64, pictureUpdateModel *models.TransactionPictureInfo) error {
+func (s *TransactionService) doCreateTransaction(c core.Context, database *datastore.Database, sess *xorm.Session, transaction *models.Transaction, transactionTagIndexes []*models.TransactionTagIndex, transactionItemIndexes []*models.TransactionItemIndex, tagIds []int64, itemIds []int64, pictureIds []int64, pictureUpdateModel *models.TransactionPictureInfo) error {
 	// Get and verify source and destination account
 	sourceAccount, destinationAccount, err := s.getAccountModels(sess, transaction)
 
@@ -2249,6 +2330,13 @@ func (s *TransactionService) doCreateTransaction(c core.Context, database *datas
 
 	// Get and verify tags
 	err = s.isTagsValid(sess, transaction, transactionTagIndexes, tagIds)
+
+	if err != nil {
+		return err
+	}
+
+	// Get and verify items
+	err = s.isItemsValid(sess, transaction, transactionItemIndexes, itemIds)
 
 	if err != nil {
 		return err
@@ -2380,6 +2468,21 @@ func (s *TransactionService) doCreateTransaction(c core.Context, database *datas
 
 			if err != nil {
 				log.Errorf(c, "[transactions.doCreateTransaction] failed to add transaction tag index, because %s", err.Error())
+				return err
+			}
+		}
+	}
+
+	// Insert transaction item index
+	if len(transactionItemIndexes) > 0 {
+		for i := 0; i < len(transactionItemIndexes); i++ {
+			transactionItemIndex := transactionItemIndexes[i]
+			transactionItemIndex.TransactionTime = transaction.TransactionTime
+
+			_, err := sess.Insert(transactionItemIndex)
+
+			if err != nil {
+				log.Errorf(c, "[transactions.doCreateTransaction] failed to add transaction item index, because %s", err.Error())
 				return err
 			}
 		}
@@ -2907,6 +3010,35 @@ func (s *TransactionService) isTagsValid(sess *xorm.Session, transaction *models
 		for i := 0; i < len(transactionTagIndexes); i++ {
 			if _, exists := tagMap[transactionTagIndexes[i].TagId]; !exists {
 				return errs.ErrTransactionTagNotFound
+			}
+		}
+	}
+
+	return nil
+}
+
+func (s *TransactionService) isItemsValid(sess *xorm.Session, transaction *models.Transaction, transactionItemIndexes []*models.TransactionItemIndex, itemIds []int64) error {
+	if len(transactionItemIndexes) > 0 {
+		var items []*models.TransactionItem
+		err := sess.Where("uid=? AND deleted=?", transaction.Uid, false).In("item_id", itemIds).Find(&items)
+
+		if err != nil {
+			return err
+		}
+
+		itemMap := make(map[int64]*models.TransactionItem)
+
+		for i := 0; i < len(items); i++ {
+			if items[i].Hidden {
+				return errs.ErrCannotUseHiddenTransactionItem
+			}
+
+			itemMap[items[i].ItemId] = items[i]
+		}
+
+		for i := 0; i < len(transactionItemIndexes); i++ {
+			if _, exists := itemMap[transactionItemIndexes[i].ItemId]; !exists {
+				return errs.ErrTransactionItemNotFound
 			}
 		}
 	}

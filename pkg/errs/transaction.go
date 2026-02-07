@@ -29,6 +29,7 @@ var (
 	ErrCannotUseHiddenTransactionTag                               = NewNormalError(NormalSubcategoryTransaction, 22, http.StatusBadRequest, "cannot use hidden transaction tag")
 	ErrTransactionHasTooManyTags                                   = NewNormalError(NormalSubcategoryTransaction, 23, http.StatusBadRequest, "transaction has too many tags")
 	ErrTransactionHasTooManyPictures                               = NewNormalError(NormalSubcategoryTransaction, 24, http.StatusBadRequest, "transaction has too many pictures")
+	ErrTransactionHasTooManyItems                                  = NewNormalError(NormalSubcategoryTransaction, 41, http.StatusBadRequest, "transaction has too many items")
 	ErrImportFileTypeIsEmpty                                       = NewNormalError(NormalSubcategoryTransaction, 25, http.StatusBadRequest, "import file type is empty")
 	ErrImportFileTypeNotSupported                                  = NewNormalError(NormalSubcategoryTransaction, 26, http.StatusBadRequest, "import file type not supported")
 	ErrNoDataToImport                                              = NewNormalError(NormalSubcategoryTransaction, 27, http.StatusBadRequest, "no data to import")

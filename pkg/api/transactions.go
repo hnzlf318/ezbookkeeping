@@ -998,6 +998,33 @@ func (a *TransactionsApi) TransactionCreateHandler(c *core.WebContext) (any, *er
 		return nil, errs.ErrTransactionHasTooManyPictures
 	}
 
+	itemIds, err := utils.StringArrayToInt64Array(transactionCreateReq.ItemIds)
+
+	if err != nil {
+		log.Warnf(c, "[transactions.TransactionCreateHandler] parse item ids failed, because %s", err.Error())
+		return nil, errs.ErrTransactionItemIdInvalid
+	}
+
+	if len(itemIds) > models.MaximumItemsCountOfTransaction {
+		return nil, errs.ErrTransactionHasTooManyItems
+	}
+
+	if len(itemIds) > 0 {
+		itemMap, err := a.transactionItems.GetItemsByItemIds(c, uid, itemIds)
+
+		if err != nil {
+			log.Errorf(c, "[transactions.TransactionCreateHandler] failed to get transaction items for user \"uid:%d\", because %s", uid, err.Error())
+			return nil, errs.Or(err, errs.ErrOperationFailed)
+		}
+
+		for _, itemId := range itemIds {
+			if _, exists := itemMap[itemId]; !exists {
+				log.Warnf(c, "[transactions.TransactionCreateHandler] transaction item \"id:%d\" does not exist for user \"uid:%d\"", itemId, uid)
+				return nil, errs.ErrTransactionItemNotFound
+			}
+		}
+	}
+
 	if transactionCreateReq.Type < models.TRANSACTION_TYPE_MODIFY_BALANCE || transactionCreateReq.Type > models.TRANSACTION_TYPE_TRANSFER {
 		log.Warnf(c, "[transactions.TransactionCreateHandler] transaction type is invalid")
 		return nil, errs.ErrTransactionTypeInvalid
@@ -1072,7 +1099,9 @@ func (a *TransactionsApi) TransactionCreateHandler(c *core.WebContext) (any, *er
 					return nil, errs.Or(err, errs.ErrOperationFailed)
 				}
 
-				transactionResp := transaction.ToTransactionInfoResponse(tagIds, nil, transactionEditable)
+				existingItemIds, _ := a.transactionItems.GetAllItemIdsOfTransactions(c, uid, []int64{transactionId})
+				existingItemIdsSlice := existingItemIds[transactionId]
+				transactionResp := transaction.ToTransactionInfoResponse(tagIds, existingItemIdsSlice, transactionEditable)
 				transactionResp.Pictures = a.GetTransactionPictureInfoResponseList(pictureInfos)
 
 				return transactionResp, nil
@@ -1080,7 +1109,7 @@ func (a *TransactionsApi) TransactionCreateHandler(c *core.WebContext) (any, *er
 		}
 	}
 
-	err = a.transactions.CreateTransaction(c, transaction, tagIds, pictureIds)
+	err = a.transactions.CreateTransaction(c, transaction, tagIds, itemIds, pictureIds)
 
 	if err != nil {
 		log.Errorf(c, "[transactions.TransactionCreateHandler] failed to create transaction \"id:%d\" for user \"uid:%d\", because %s", transaction.TransactionId, uid, err.Error())
@@ -1090,7 +1119,7 @@ func (a *TransactionsApi) TransactionCreateHandler(c *core.WebContext) (any, *er
 	log.Infof(c, "[transactions.TransactionCreateHandler] user \"uid:%d\" has created a new transaction \"id:%d\" successfully", uid, transaction.TransactionId)
 
 	a.SetSubmissionRemarkIfEnable(duplicatechecker.DUPLICATE_CHECKER_TYPE_NEW_TRANSACTION, uid, transactionCreateReq.ClientSessionId, utils.Int64ToString(transaction.TransactionId))
-	transactionResp := transaction.ToTransactionInfoResponse(tagIds, nil, transactionEditable)
+	transactionResp := transaction.ToTransactionInfoResponse(tagIds, itemIds, transactionEditable)
 	transactionResp.Pictures = a.GetTransactionPictureInfoResponseList(pictureInfos)
 
 	return transactionResp, nil
@@ -1122,6 +1151,17 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 
 	if len(tagIds) > models.MaximumTagsCountOfTransaction {
 		return nil, errs.ErrTransactionHasTooManyTags
+	}
+
+	itemIds, err := utils.StringArrayToInt64Array(transactionModifyReq.ItemIds)
+
+	if err != nil {
+		log.Warnf(c, "[transactions.TransactionModifyHandler] parse item ids failed, because %s", err.Error())
+		return nil, errs.ErrTransactionItemIdInvalid
+	}
+
+	if len(itemIds) > models.MaximumItemsCountOfTransaction {
+		return nil, errs.ErrTransactionHasTooManyItems
 	}
 
 	pictureIds, err := utils.StringArrayToInt64Array(transactionModifyReq.PictureIds)
@@ -1179,6 +1219,35 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 		transactionTagIds = make([]int64, 0, 0)
 	}
 
+	allTransactionItemIds, err := a.transactionItems.GetAllItemIdsOfTransactions(c, uid, []int64{transaction.TransactionId})
+
+	if err != nil {
+		log.Errorf(c, "[transactions.TransactionModifyHandler] failed to get transaction item ids for user \"uid:%d\", because %s", uid, err.Error())
+		return nil, errs.Or(err, errs.ErrOperationFailed)
+	}
+
+	transactionItemIds := allTransactionItemIds[transaction.TransactionId]
+
+	if transactionItemIds == nil {
+		transactionItemIds = make([]int64, 0, 0)
+	}
+
+	if len(itemIds) > 0 {
+		itemMap, err := a.transactionItems.GetItemsByItemIds(c, uid, itemIds)
+
+		if err != nil {
+			log.Errorf(c, "[transactions.TransactionModifyHandler] failed to get transaction items for user \"uid:%d\", because %s", uid, err.Error())
+			return nil, errs.Or(err, errs.ErrOperationFailed)
+		}
+
+		for _, itemId := range itemIds {
+			if _, exists := itemMap[itemId]; !exists {
+				log.Warnf(c, "[transactions.TransactionModifyHandler] transaction item \"id:%d\" does not exist for user \"uid:%d\"", itemId, uid)
+				return nil, errs.ErrTransactionItemNotFound
+			}
+		}
+	}
+
 	transactionPictureInfos, err := a.transactionPictures.GetPictureInfosByTransactionId(c, uid, transaction.TransactionId)
 
 	if err != nil {
@@ -1222,6 +1291,7 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 		newTransaction.GeoLongitude == transaction.GeoLongitude &&
 		newTransaction.GeoLatitude == transaction.GeoLatitude &&
 		utils.Int64SliceEquals(tagIds, transactionTagIds) &&
+		utils.Int64SliceEquals(itemIds, transactionItemIds) &&
 		utils.Int64SliceEquals(pictureIds, transactionPictureIds) {
 		return nil, errs.ErrNothingWillBeUpdated
 	}
@@ -1240,6 +1310,9 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 		removeTransactionTagIds = transactionTagIds
 		addTransactionTagIds = tagIds
 	}
+
+	addTransactionItemIds := utils.Int64SliceMinus(itemIds, transactionItemIds)
+	removeTransactionItemIds := utils.Int64SliceMinus(transactionItemIds, itemIds)
 
 	addTransactionPictureIds := utils.Int64SliceMinus(pictureIds, transactionPictureIds)
 	removeTransactionPictureIds := utils.Int64SliceMinus(transactionPictureIds, pictureIds)
@@ -1280,7 +1353,7 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 		}
 	}
 
-	err = a.transactions.ModifyTransaction(c, newTransaction, len(transactionTagIds), addTransactionTagIds, removeTransactionTagIds, addTransactionPictureIds, removeTransactionPictureIds)
+	err = a.transactions.ModifyTransaction(c, newTransaction, len(transactionTagIds), addTransactionTagIds, removeTransactionTagIds, addTransactionItemIds, removeTransactionItemIds, addTransactionPictureIds, removeTransactionPictureIds)
 
 	if err != nil {
 		log.Errorf(c, "[transactions.TransactionModifyHandler] failed to update transaction \"id:%d\" for user \"uid:%d\", because %s", transactionModifyReq.Id, uid, err.Error())
@@ -1290,7 +1363,7 @@ func (a *TransactionsApi) TransactionModifyHandler(c *core.WebContext) (any, *er
 	log.Infof(c, "[transactions.TransactionModifyHandler] user \"uid:%d\" has updated transaction \"id:%d\" successfully", uid, transactionModifyReq.Id)
 
 	newTransaction.Type = transaction.Type
-	newTransactionResp := newTransaction.ToTransactionInfoResponse(tagIds, nil, transactionEditable)
+	newTransactionResp := newTransaction.ToTransactionInfoResponse(tagIds, itemIds, transactionEditable)
 	newTransactionResp.Pictures = a.GetTransactionPictureInfoResponseList(newPictureInfos)
 
 	return newTransactionResp, nil
