@@ -581,7 +581,7 @@
                                                     </div>
                                                 </td>
                                                 <td class="transaction-table-column-items">
-                                                    <v-chip class="transaction-tag" size="small" :prepend-icon="mdiListBullet"
+                                                    <v-chip class="transaction-tag" size="small" :prepend-icon="mdiFormatListBulleted"
                                                             :text="allTransactionItemsMap[itemId]?.name"
                                                             :key="itemId"
                                                             v-for="itemId in (transaction.itemIds || [])"/>
@@ -748,7 +748,7 @@ import {
     mdiArrowLeft,
     mdiArrowRight,
     mdiPound,
-    mdiListBullet,
+    mdiFormatListBulleted,
     mdiMagicStaff,
     mdiTextBoxOutline
 } from '@mdi/js';
